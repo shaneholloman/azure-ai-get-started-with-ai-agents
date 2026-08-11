@@ -108,7 +108,7 @@ def get_agent_version_details(request: Request) -> AgentVersionDetails:
     return request.app.state.agent_version_details
 
 def get_openai_client(request: Request) -> AsyncOpenAI:
-    return get_project_client(request).get_openai_client(agent_name=request.app.state.agent_version_details.name)
+    return get_project_client(request).get_openai_client()
 
 def get_created_at_label(message_id: str) -> str:
     return f"{message_id}_created_at"
@@ -218,13 +218,14 @@ async def get_result(
 ) -> AsyncGenerator[str, None]:
     ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
     with tracer.start_as_current_span('get_result', context=ctx):
-        async with project_client.get_openai_client(agent_name=agent.name) as openai_client:
+        async with project_client.get_openai_client() as openai_client:
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
             try:
                 async with openai_client.responses.stream(
                     conversation=conversation.id,
                     input=user_message,
+                    extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
                     model=os.environ["AZURE_AI_AGENT_DEPLOYMENT_NAME"]
                 ) as stream:
                     logger.info("Successfully created stream; starting to process events")
@@ -248,7 +249,7 @@ async def get_result(
 
                     final_response = await stream.get_final_response()
                     logger.info(f"Response completed with full message: {final_response.output_text}")
-
+                                                        
             except Exception as e:
                 logger.exception(f"Exception in get_result: {e}")
                 error_data = {
@@ -313,7 +314,7 @@ async def get_chat_agent(
     agent_name = agent_id.split(":")[0]
     agent_version = agent_id.split(":")[1]
     agent_playground_url = f"https://ai.azure.com/nextgen/r/{encode_project_resource_id(wsid)}/build/agents/{quote(agent_name)}/build?version={agent_version}"
-    return JSONResponse(content={"name": agent.name, "metadata": agent.metadata, "agentPlaygroundUrl": agent_playground_url})
+    return JSONResponse(content={"name": agent.name, "version": agent.version, "metadata": agent.metadata, "agentPlaygroundUrl": agent_playground_url})
 
 
 @router.post("/chat")
@@ -332,7 +333,7 @@ async def chat(
     TraceContextTextMapPropagator().inject(carrier)
 
     with tracer.start_as_current_span("chat_request"):
-        async with project_client.get_openai_client(agent_name=agent.name) as openai_client:
+        async with project_client.get_openai_client() as openai_client:
             # if the connection no longer exist or agent is changed, create a new one
             conversation = await get_or_create_conversation(
                 openai_client, conversation_id, agent_id, agent.id
